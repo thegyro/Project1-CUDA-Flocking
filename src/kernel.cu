@@ -525,7 +525,7 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 	kernResetIntBuffer<<<numBlocks, blockSize >>>(numObjects, dev_gridCellEndIndices, -1);
 	checkCUDAErrorWithLine("Cell end reset failed");
 
-	kernComputeIndices<<<numBlocks, blockSize>>>(N, gridCellCount, gridMinimum, gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
+	kernComputeIndices<<<numBlocks, blockSize>>>(N, gridSideCount, gridMinimum, gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
 	checkCUDAErrorWithLine("Compute indices failed");
 
 	dev_thrust_particleArrayIndices = thrust::device_pointer_cast(dev_particleArrayIndices);
@@ -536,7 +536,7 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 	kernIdentifyCellStartEnd<<<numBlocks, blockSize>>>(N, dev_particleGridIndices, dev_gridCellStartIndices, dev_gridCellEndIndices);
 	checkCUDAErrorWithLine("Cell start/end failed");
 
-	kernUpdateVelNeighborSearchScattered<<<numBlocks, blockSize>>>(N, gridCellCount, gridMinimum, 
+	kernUpdateVelNeighborSearchScattered<<<numBlocks, blockSize>>>(N, gridSideCount, gridMinimum, 
 		gridInverseCellWidth, gridCellWidth, dev_gridCellStartIndices,
 		dev_gridCellEndIndices, dev_particleArrayIndices, dev_pos, dev_vel1, dev_vel2);
 	checkCUDAErrorWithLine("Velocity update failed");
@@ -564,9 +564,6 @@ void Boids::stepSimulationCoherentGrid(float dt) {
   // - Update positions
   // - Ping-pong buffers as needed. THIS MAY BE DIFFERENT FROM BEFORE.
 
-	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
-
-
 }
 
 void Boids::endSimulation() {
@@ -575,6 +572,10 @@ void Boids::endSimulation() {
   cudaFree(dev_pos);
 
   // TODO-2.1 TODO-2.3 - Free any additional buffers here.
+	cudaFree(dev_particleArrayIndices);
+	cudaFree(dev_particleGridIndices);
+	cudaFree(dev_gridCellStartIndices);
+	cudaFree(dev_gridCellEndIndices);
 }
 
 void Boids::unitTest() {
