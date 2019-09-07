@@ -175,11 +175,14 @@ void Boids::initSimulation(int N) {
 	cudaMalloc((void**)&dev_particleGridIndices, N * sizeof(int));
 	checkCUDAErrorWithLine("cudaMalloc dev_particleGridIndices failed!");
 	
-	cudaMalloc((void**)&dev_gridCellStartIndices, N * sizeof(int));
+	cudaMalloc((void**)&dev_gridCellStartIndices, gridCellCount * sizeof(int));
 	checkCUDAErrorWithLine("cudaMalloc dev_gridCellStartIndices failed!");
 	
-	cudaMalloc((void**)&dev_gridCellEndIndices, N * sizeof(int));
+	cudaMalloc((void**)&dev_gridCellEndIndices, gridCellCount * sizeof(int));
 	checkCUDAErrorWithLine("cudaMalloc dev_gridCellEndIndices failed!");
+
+	dev_thrust_particleArrayIndices = thrust::device_pointer_cast<int>(dev_particleArrayIndices);
+	dev_thrust_particleGridIndices = thrust::device_pointer_cast<int>(dev_particleGridIndices);
   
 	cudaDeviceSynchronize();
 }
@@ -305,8 +308,7 @@ __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos, glm::vec3 *v
 	if (boidId >= N) return;
 
 	glm::vec3 finalVel = computeVelocityChange(N, boidId, pos, vel1);
-	finalVel = glm::clamp(finalVel, -maxSpeed, maxSpeed);
-	vel2[boidId] = vel1[boidId] + finalVel;
+	vel2[boidId] = glm::clamp(vel1[boidId] + finalVel, -maxSpeed, maxSpeed);
 }
 
 /**
@@ -358,7 +360,7 @@ __global__ void kernComputeIndices(int N, int gridResolution,
 
 	glm::vec3 grid3d = glm::floor((pos[boidId] - gridMin) * inverseCellWidth);
 
-	int gridId = gridIndex3Dto1D(grid3d.x, grid3d.y, grid3d.z, gridResolution);
+	int gridId = gridIndex3Dto1D((int) grid3d.x, (int) grid3d.y, (int) grid3d.z, gridResolution);
 
 	indices[boidId] = boidId;
 	gridIndices[boidId] = gridId;
@@ -382,15 +384,22 @@ __global__ void kernIdentifyCellStartEnd(int N, int *particleGridIndices,
 	int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 	if (index >= N) return;
 
+	//float x = p[index].x, y = p[index].y, z = p[index].z;
+
 	if(index != 0 && particleGridIndices[index] != particleGridIndices[index-1]) {
-		gridCellEndIndices[particleGridIndices[index - 1]] = index - 1;
+		gridCellEndIndices[particleGridIndices[index-1]] = index-1;
 		gridCellStartIndices[particleGridIndices[index]] = index;
 	}
 	else if (index == 0) {
 		gridCellStartIndices[particleGridIndices[0]] = 0;
 	}
+	else if (index == N - 1) {
+		gridCellEndIndices[particleGridIndices[N - 1]] = N - 1;
+	}
 
 }
+
+
 
 __global__ void kernUpdateVelNeighborSearchScattered(
   int N, int gridResolution, glm::vec3 gridMin,
@@ -417,17 +426,28 @@ __global__ void kernUpdateVelNeighborSearchScattered(
 	glm::vec3 finalCenter(0.0f, 0.0f, 0.0f);
 
 	glm::vec3 grid3d = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth);
-	for (int x = grid3d.x-1; x <= grid3d.x+1; x++) {
-		for (int y = grid3d.y-1; y <= grid3d.y+1; y++) {
-			for (int z = grid3d.z-1; z <= grid3d.z+1; z++) {
+
+	//printf("x:%d, y:%d, z:%d\n", grid3d.x, grid3d.y, grid3d.z);
+	//printf("x, y, z, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %d\n", pos[iSelf].x, pos[iSelf].y, pos[iSelf].z, gridMin.x, gridMin.y, gridMin.z, inverseCellWidth, (int) grid3d.x);
+	
+	int x_g = (int)grid3d.x, y_g = (int)grid3d.y, z_g = (int)grid3d.z;
+
+	long long int count = 0;
+	for (int x = x_g-1; x <= x_g+1; x++) {
+		for (int y = y_g-1; y <= y_g+1; y++) {
+			for (int z = z_g-1; z <= z_g+1; z++) {
 				if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
 					int gridId = gridIndex3Dto1D(x, y, z, gridResolution);
+					
 					int start = gridCellStartIndices[gridId];
 					int end = gridCellEndIndices[gridId];
+					//printf("%d, %d, %d, start:end, %d, %d", x, y, z, start, end);
 					if (start == -1 || end == -1) continue;
 
 					for (int idx = start; idx <= end; idx++) {
+						count += 1;
 						int bid = particleArrayIndices[idx];
+						//printf("%d, %d, %d, start:end, %d, %d, bid, %d\n", x, y, z, start, end, bid);
 
 						if (bid != iSelf && glm::distance(pos[iSelf], pos[bid]) < rule1Distance) {
 							finalCenter += pos[bid];
@@ -447,6 +467,8 @@ __global__ void kernUpdateVelNeighborSearchScattered(
 			}
 		}
 	}
+
+	//printf("Loop Count %d\n", count);
 
 	if (countN1 != 0) {
 		finalCenter /= countN1;
@@ -519,17 +541,13 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
 	int N = numObjects;
 
-
-	kernResetIntBuffer<<<numBlocks, blockSize>>>(numObjects, dev_gridCellStartIndices, -1);
+	kernResetIntBuffer<<<numBlocks, blockSize>>>(gridCellCount, dev_gridCellStartIndices, -1);
 	checkCUDAErrorWithLine("Cell start reset failed");
-	kernResetIntBuffer<<<numBlocks, blockSize >>>(numObjects, dev_gridCellEndIndices, -1);
+	kernResetIntBuffer<<<numBlocks, blockSize >>>(gridCellCount, dev_gridCellEndIndices, -1);
 	checkCUDAErrorWithLine("Cell end reset failed");
 
 	kernComputeIndices<<<numBlocks, blockSize>>>(N, gridSideCount, gridMinimum, gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
 	checkCUDAErrorWithLine("Compute indices failed");
-
-	dev_thrust_particleArrayIndices = thrust::device_pointer_cast(dev_particleArrayIndices);
-	dev_thrust_particleGridIndices = thrust::device_pointer_cast(dev_particleGridIndices);
 
 	thrust::sort_by_key(dev_thrust_particleGridIndices, dev_thrust_particleGridIndices + N, dev_thrust_particleArrayIndices);
 
