@@ -96,6 +96,9 @@ float gridCellWidth;
 float gridInverseCellWidth;
 glm::vec3 gridMinimum;
 
+float avgTimeTaken = 0.0f;
+float countTimeTaken = 0;
+
 /******************
 * initSimulation *
 ******************/
@@ -159,7 +162,7 @@ void Boids::initSimulation(int N) {
   checkCUDAErrorWithLine("kernGenerateRandomPosArray failed!");
 
   // LOOK-2.1 computing grid params
-  gridCellWidth = 2.0f * std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
+  gridCellWidth = 2*std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
   int halfSideCount = (int)(scene_scale / gridCellWidth) + 1;
   gridSideCount = 2 * halfSideCount;
 
@@ -433,27 +436,35 @@ __global__ void kernUpdateVelNeighborSearchScattered(
 	glm::vec3 finalDir(0.0f, 0.0f, 0.0f);
 	glm::vec3 finalCenter(0.0f, 0.0f, 0.0f);
 
+	float maxDistance = imax(imax(rule1Distance, rule2Distance), rule3Distance);
+
 	glm::vec3 grid3d = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth);
+	glm::vec3 grid3d_min = glm::floor((pos[iSelf] - gridMin - maxDistance) * inverseCellWidth);
+	glm::vec3 grid3d_max = glm::floor((pos[iSelf] - gridMin + maxDistance) * inverseCellWidth);
 
-	//printf("x:%d, y:%d, z:%d\n", grid3d.x, grid3d.y, grid3d.z);
-	//printf("x, y, z, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %d\n", pos[iSelf].x, pos[iSelf].y, pos[iSelf].z, gridMin.x, gridMin.y, gridMin.z, inverseCellWidth, (int) grid3d.x);
-	
 	int x_g = (int)grid3d.x, y_g = (int)grid3d.y, z_g = (int)grid3d.z;
+	int x_g_min = (int)grid3d_min.x, y_g_min = (int)grid3d_min.y, z_g_min = (int)grid3d_min.z;
+	int x_g_max = (int)grid3d_max.x, y_g_max = (int)grid3d_max.y, z_g_max = (int)grid3d_max.z;
 
-	for (int x = x_g-1; x <= x_g+1; x++) {
-		for (int y = y_g-1; y <= y_g+1; y++) {
-			for (int z = z_g-1; z <= z_g+1; z++) {
+	x_g_max = imin(x_g_max, gridResolution - 1), y_g_max = imin(y_g_max, gridResolution - 1), z_g_max = imin(z_g_max, gridResolution - 1);
+	x_g_min = imax(x_g_min, 0), y_g_min = imax(y_g_min, 0), z_g_min = imax(z_g_min, 0);
+
+	//x_g_max = x_g-1, y_g_max = x_g-1, z_g_max = imin(z_g_max, gridResolution - 1);
+	//x_g_min = imax(x_g_min, 0), y_g_min = imax(y_g_min, 0), z_g_min = imax(z_g_min, 0);
+
+
+	for (int x = x_g_min; x <= x_g_max; x++) {
+		for (int y = y_g_min; y <= y_g_max; y++) {
+			for (int z = z_g_min; z <= z_g_max; z++) {
 				if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
 					int gridId = gridIndex3Dto1D(x, y, z, gridResolution);
 					
 					int start = gridCellStartIndices[gridId];
 					int end = gridCellEndIndices[gridId];
-					//printf("%d, %d, %d, start:end, %d, %d", x, y, z, start, end);
-					if (start == -1 || end == -1 || start < 0 || start >= N || end < 0 || end >= N) continue;
+					if (start < 0 || start >= N || end < 0 || end >= N) continue;
 
 					for (int idx = start; idx <= end; idx++) {
 						int bid = particleArrayIndices[idx];
-						//printf("%d, %d, %d, start:end, %d, %d, bid, %d\n", x, y, z, start, end, bid);
 
 						if (bid != iSelf && glm::distance(pos[iSelf], pos[bid]) < rule1Distance) {
 							finalCenter += pos[bid];
@@ -519,9 +530,6 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 	glm::vec3 finalDir(0.0f, 0.0f, 0.0f);
 	glm::vec3 finalCenter(0.0f, 0.0f, 0.0f);
 
-	//printf("x:%d, y:%d, z:%d\n", grid3d.x, grid3d.y, grid3d.z);
-	//printf("x, y, z, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %d\n", pos[iSelf].x, pos[iSelf].y, pos[iSelf].z, gridMin.x, gridMin.y, gridMin.z, inverseCellWidth, (int) grid3d.x);
-
 	float maxDistance = imax(imax(rule1Distance, rule2Distance), rule3Distance);
 	
 	glm::vec3 grid3d = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth); // cell coordinates of the boid
@@ -532,21 +540,20 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 	int x_g_min = (int)grid3d_min.x, y_g_min = (int)grid3d_min.y, z_g_min = (int)grid3d_min.z;
 	int x_g_max = (int)grid3d_max.x, y_g_max = (int)grid3d_max.y, z_g_max = (int)grid3d_max.z;
 
-	int count = 0;
+	x_g_max = imin(x_g_max, gridResolution - 1), y_g_max = imin(y_g_max, gridResolution - 1), z_g_max = imin(z_g_max, gridResolution - 1);
+	x_g_min = imax(x_g_min, 0), y_g_min = imax(y_g_min, 0), z_g_min = imax(z_g_min, 0);
+
 	for (int x = x_g_min; x <= x_g_max; x++) {
 		for (int y = y_g_min; y <= y_g_max; y++) {
 			for (int z = z_g_min; z <= z_g_max; z++) {
-				count += 1;
 				if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
 					int gridId = gridIndex3Dto1D(x, y, z, gridResolution);
 
 					int start = gridCellStartIndices[gridId];
 					int end = gridCellEndIndices[gridId];
-					//printf("%d, %d, %d, start:end, %d, %d", x, y, z, start, end);
 					if (start < 0 || start >= N || end < 0 || end >= N) continue;
 
 					for (int idx = start; idx <= end; idx++) {
-						//printf("%d, %d, %d, start:end, %d, %d, bid, %d\n", x, y, z, start, end, bid);
 						int bid = idx;
 
 						if (bid != iSelf && glm::distance(pos[iSelf], pos[bid]) < rule1Distance) {
@@ -609,6 +616,12 @@ void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
   // TODO-1.2 ping-pong the velocity buffers
 
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	cudaEventRecord(start);
+
 	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
 	kernUpdateVelocityBruteForce<<<numBlocks, blockSize>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
 
@@ -619,6 +632,17 @@ void Boids::stepSimulationNaive(float dt) {
 	checkCUDAErrorWithLine("Position update failed");
 
 	dev_vel1 = dev_vel2;
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float milliseconds = 0;
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	avgTimeTaken += milliseconds;
+	if (countTimeTaken == 100){
+		avgTimeTaken /= countTimeTaken;
+		printf("Time taken for one simulation step: %.2f\n", avgTimeTaken);
+	}
+	countTimeTaken++;
 }
 
 
@@ -640,6 +664,12 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 
 	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
 	int N = numObjects;
+
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	cudaEventRecord(start);
 
 	//int threadsPerBlockCP = 2 * blockSize;
 	//dim3 numBlocksCellPointers((gridCellCount + threadsPerBlockCP - 1) / threadsPerBlockCP);
@@ -668,6 +698,17 @@ void Boids::stepSimulationScatteredGrid(float dt) {
 	checkCUDAErrorWithLine("Position update failed");
 
 	dev_vel1 = dev_vel2;
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float milliseconds = 0;
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	avgTimeTaken += milliseconds;
+	if (countTimeTaken == 1000) {
+		avgTimeTaken /= countTimeTaken;
+		printf("Time taken for one simulation step: %.2f\n", avgTimeTaken);
+	}
+	countTimeTaken++;
 }
 
 void Boids::stepSimulationCoherentGrid(float dt) {
@@ -686,6 +727,13 @@ void Boids::stepSimulationCoherentGrid(float dt) {
   // - Perform velocity updates using neighbor search
   // - Update positions
   // - Ping-pong buffers as needed. THIS MAY BE DIFFERENT FROM BEFORE.
+
+
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	cudaEventRecord(start);
 
 	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
 	int N = numObjects;
@@ -714,14 +762,22 @@ void Boids::stepSimulationCoherentGrid(float dt) {
 		dev_gridCellEndIndices, dev_shuffledPos, dev_shuffledVel, dev_vel2);
 	checkCUDAErrorWithLine("Velocity update failed");
 
-	// unshuffle velocity
+	// unshuffle velocity and put it back in dev_vel1
 	kernUnShuffleVel<< <numBlocks, blockSize>>>(N, dev_vel1, dev_vel2, dev_particleArrayIndices);
 
 	kernUpdatePos << <numBlocks, blockSize >> > (numObjects, dt, dev_pos, dev_vel1);
 	checkCUDAErrorWithLine("Position update failed");
 
-	//dev_vel1 = dev_vel2;
-
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float milliseconds = 0;
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	avgTimeTaken += milliseconds;
+	if (countTimeTaken == 1000) {
+		avgTimeTaken /= countTimeTaken;
+		printf("Time taken for one simulation step: %.2f\n", avgTimeTaken);
+	}
+	countTimeTaken += 1;
 }
 
 void Boids::endSimulation() {
