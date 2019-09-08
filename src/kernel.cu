@@ -519,23 +519,31 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 	glm::vec3 finalDir(0.0f, 0.0f, 0.0f);
 	glm::vec3 finalCenter(0.0f, 0.0f, 0.0f);
 
-	glm::vec3 grid3d = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth);
-
 	//printf("x:%d, y:%d, z:%d\n", grid3d.x, grid3d.y, grid3d.z);
 	//printf("x, y, z, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %d\n", pos[iSelf].x, pos[iSelf].y, pos[iSelf].z, gridMin.x, gridMin.y, gridMin.z, inverseCellWidth, (int) grid3d.x);
 
-	int x_g = (int)grid3d.x, y_g = (int)grid3d.y, z_g = (int)grid3d.z;
+	float maxDistance = imax(imax(rule1Distance, rule2Distance), rule3Distance);
+	
+	glm::vec3 grid3d = glm::floor((pos[iSelf] - gridMin) * inverseCellWidth); // cell coordinates of the boid
+	glm::vec3 grid3d_min = glm::floor((pos[iSelf] - gridMin - maxDistance) * inverseCellWidth);
+	glm::vec3 grid3d_max = glm::floor((pos[iSelf] - gridMin + maxDistance) * inverseCellWidth);
 
-	for (int x = x_g - 1; x <= x_g + 1; x++) {
-		for (int y = y_g - 1; y <= y_g + 1; y++) {
-			for (int z = z_g - 1; z <= z_g + 1; z++) {
+	int x_g = (int)grid3d.x, y_g = (int)grid3d.y, z_g = (int)grid3d.z;
+	int x_g_min = (int)grid3d_min.x, y_g_min = (int)grid3d_min.y, z_g_min = (int)grid3d_min.z;
+	int x_g_max = (int)grid3d_max.x, y_g_max = (int)grid3d_max.y, z_g_max = (int)grid3d_max.z;
+
+	int count = 0;
+	for (int x = x_g_min; x <= x_g_max; x++) {
+		for (int y = y_g_min; y <= y_g_max; y++) {
+			for (int z = z_g_min; z <= z_g_max; z++) {
+				count += 1;
 				if (x >= 0 && y >= 0 && z >= 0 && x < gridResolution && y < gridResolution && z < gridResolution) {
 					int gridId = gridIndex3Dto1D(x, y, z, gridResolution);
 
 					int start = gridCellStartIndices[gridId];
 					int end = gridCellEndIndices[gridId];
 					//printf("%d, %d, %d, start:end, %d, %d", x, y, z, start, end);
-					if (start == -1 || end == -1 || start < 0 || start >= N || end < 0 || end >= N) continue;
+					if (start < 0 || start >= N || end < 0 || end >= N) continue;
 
 					for (int idx = start; idx <= end; idx++) {
 						//printf("%d, %d, %d, start:end, %d, %d, bid, %d\n", x, y, z, start, end, bid);
@@ -682,12 +690,12 @@ void Boids::stepSimulationCoherentGrid(float dt) {
 	dim3 numBlocks((numObjects + blockSize - 1) / blockSize);
 	int N = numObjects;
 
-	int threadsPerBlockCP = 2 * blockSize;
-	dim3 numBlocksCellPointers((gridCellCount + threadsPerBlockCP - 1) / threadsPerBlockCP);
+	//int threadsPerBlockCP = 2 * blockSize;
+	//dim3 numBlocksCellPointers((gridCellCount + threadsPerBlockCP - 1) / threadsPerBlockCP);
 
-	kernResetIntBuffer << <numBlocksCellPointers, threadsPerBlockCP >> > (gridCellCount, dev_gridCellStartIndices, -1);
+	kernResetIntBuffer << <numBlocks, blockSize >> > (gridCellCount, dev_gridCellStartIndices, -1);
 	checkCUDAErrorWithLine("Cell start reset failed");
-	kernResetIntBuffer << <numBlocksCellPointers, threadsPerBlockCP >> > (gridCellCount, dev_gridCellEndIndices, -1);
+	kernResetIntBuffer << <numBlocks, blockSize >> > (gridCellCount, dev_gridCellEndIndices, -1);
 	checkCUDAErrorWithLine("Cell end reset failed");
 
 	kernComputeIndices << <numBlocks, blockSize >> > (N, gridSideCount, gridMinimum, gridInverseCellWidth, dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
