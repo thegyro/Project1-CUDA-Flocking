@@ -100,7 +100,7 @@ Once we have this, for each boid, we figure out the potential neighbour grid cel
 
 ## Coherent Search
 
-In the above uniform grid construction, we access the position and velocity of neighbouring boids by getting their index from `boidIndices` array using that to retrieve `pos[boidIndices[i]]` and `vel[boidIndices[i]]`. This is a _scattered_ search because are continuously accessing position and velocity values from non-contiguous memory locations. If `pos` and `vel` _also_ algined with `gridIndices` and `boidIndices` we can directly access the positions of neighbouring boids in a grid cell with `gridCellStart` and `gridCellEnd`: `pos[gridCellStart[g]]` to `pos[gridCellEnd[g]]` gives the positions of all the potential boids. Therefore we also sort the position and velocity arrays by the value of `gridIndices`. But, since we have already sorted `boidIndices` using a simple shuffle trick we can rearrange `pos` data to reflect the sort. This is reflected in the following diagram,
+In the above uniform grid construction, we access the position and velocity of neighbouring boids by getting their index from `boidIndices` array using that to retrieve `pos[boidIndices[i]]` and `vel[boidIndices[i]]`. This is a _scattered_ search because we are continuously accessing position and velocity values from non-contiguous memory locations. If `pos` and `vel` _also_ algined with `gridIndices` and `boidIndices` we can directly access the positions of neighbouring boids in a grid cell with `gridCellStart` and `gridCellEnd`: `pos[gridCellStart[g]]` to `pos[gridCellEnd[g]]` gives the positions of all the potential boids. Therefore we also sort the position and velocity arrays by the value of `gridIndices`. But, since we have already sorted `boidIndices` using a simple shuffle trick we can rearrange `pos` data to reflect the sort. Now since the data is stored in contiguous locations in memory, we can get efficient memory access (blocks of data will be cached locally we might not have hit the global memory for every iteration). This is reflected in the following diagram,
 
 ![buffers for generating a uniform grid using index sort, then making the boid data coherent](images/Boids%20Ugrids%20buffers%20data%20coherent.png)
 
@@ -123,15 +123,14 @@ We measure the time (in milliseconds) taken for one complete simulation step usi
 <img src="data/coherent_boids.png">
 </p>
 
-In all cases, performance drops with increasing number of boids. This is expected, more boids mean more calculations we have to perform as our potential neighbours increase (since the volume is kept constant, density has to increase) and we have more boids to calculate the velocity update for. 
+In all cases, performance drops with increasing number of boids. This is expected, more boids mean more calculations we have to perform as our potential neighbours increase (since the volume is kept constant, density has to increase) and we have more boids to calculate the velocity update for. Theoretically, if we had very large number of processors to execute all the threads in a truly parallel way, only the dense neighbours affect the performance and not the total number of velocity updates. 
 
 2. For the coherent uniform grid: did you experience any performance improvements
 with the more coherent uniform grid? Was this the outcome you expected? Why or why not?
 
-From the graphs we see that, we get better performance for scattered search over naive search (unsurprisingly). The unfigorm grid construction drastically reduces the search space per boid (as explained in the before sections). Coherent search improves upon scattered search by utilizing efficient memory access. With Coherent, we are able to simulate upto 1M boids and upto 500k boids for scattered. Naive search fails beyond 50k boids.
+From the graphs we see that, we get better performance for scattered search over naive search (unsurprisingly). The unfigorm grid construction drastically reduces the search space per boid (as explained in the before sections). Coherent search improves upon scattered search by utilizing efficient memory access. This is not apparent till we increase the number of boids to a large number. With Coherent, we are able to simulate upto 1M boids  but only 500k boids for the scattered search. Naive search fails beyond 50k boids.
 
-3. How does changing the block count and block size
-affect performance? Why do you think this is?
+3. How does changing the block count and block size affect performance? Why do you think this is?
 
 The following graph is plotted for scattered search with 50,000 boids.
 
